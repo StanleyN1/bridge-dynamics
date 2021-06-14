@@ -192,15 +192,17 @@ class Simulation:
             plt.scatter(forward_pos, lateral_pos, color=self.z_color(i), s=100)
             plt.arrow(forward_pos, lateral_pos, forward_vel, lateral_vel, color=self.v_color(forward_vel/self.vmax()))
 
-    def plot_dots_from_data(self, frame, forward_pos, forward_vel, lateral_pos, lateral_vel):
+    def plot_dots_from_data(self, frame, forward_pos, forward_vel, lateral_pos, lateral_vel, axs):
         for i in range(self.N):
-            plt.scatter(forward_pos[i, frame], lateral_pos[i, frame], color=self.z_color(i), s=100)
-            plt.arrow(forward_pos[i, frame], lateral_pos[i, frame], forward_vel[i, frame], lateral_vel[i, frame], color=self.v_color(forward_vel[i, frame]/self.vmax()))
+            axs.scatter(forward_pos[i, frame], lateral_pos[i, frame], color=self.z_color(i), s=100)
+            axs.arrow(forward_pos[i, frame], lateral_pos[i, frame], forward_vel[i, frame], lateral_vel[i, frame], color=self.v_color(forward_vel[i, frame]/self.vmax()))
 
     def ode_bridge_lateral_no_forward(self, t, S):
         x, dx = S[0:2]
         peds = S[2:][:self.N]
         dpeds = S[2:][self.N:]
+
+
 
         M = 5060
         r = self.get('m') / (M + self.get('m').sum())
@@ -242,66 +244,83 @@ class Simulation:
 
     where H comes from model 3
     '''
-    def ode_bridge_full(self, t, S):
+    def ode_bridge_full(self, t, S, loop):
         '''
         current full pedestrian-bridge ode simulation
         '''
+        np.errstate(all='raise')
+        try:
+            x, dx = S[0:2]
+            peds = S[2:][:self.N] # lateral pos
+            dpeds = S[2:][self.N:2 * self.N] # lateral vel
 
-        x, dx = S[0:2]
-        peds = S[2:][:self.N] # lateral pos
-        dpeds = S[2:][self.N:2 * self.N] # lateral vel
+            zs = S[2:][2 * self.N:3 * self.N] # forward pos
+            vs = S[2:][3 * self.N:4 * self.N] # forward vel
 
-        zs = S[2:][2 * self.N:3 * self.N] # forward pos
-        vs = S[2:][3 * self.N:4 * self.N] # forward vel
+            # if loop:
+            #     for i in range(len(vs)):
+            #         if vs[i] > loop:
+            #             vs[i] = 0.00
+            # print(vs)
+            # self.x = x
+            # self.dx = dx
+            # for i in range(self.N): # update person position and velocity
+            #     self.people[i].z = zs[i]
+            #     self.people[i].v = vs[i]
+            #     self.people[i].y = peds[i]
+            #     self.people[i].dy = dpeds[i]
 
-        M = 5060
-        r = self.get('m').sum()
+            M = 35060
+            r = self.get('m').sum()
 
-        # l = 0.1
-        # o = 0.7
-        # p = 0.3
-        # a = 0.2
-        # nu = 0.67
+            # l = 0.1
+            # o = 0.7
+            # p = 0.3
+            # a = 0.2
+            # nu = 0.67
 
-        # parameters from kevin's code
+            # parameters from kevin's code
 
-        l = 23.25 # limit_cycle_damping_parameter
-        a = 0.47 # limit_cycle_amplitude_parameter
-        p = 0.63
-        o = 1.04
+            l = 23.25 # limit_cycle_damping_parameter
+            a = 0.47 # limit_cycle_amplitude_parameter
+            p = 0.63
+            o = 1.04
 
-        self.vsgn = lambda y: 1 - 2 * (y < 0)
+            self.vsgn = lambda y: 1 - 2 * (y < 0)
 
-        Hi = lambda y, dy, fv: -(fv*o)**2 * (y - p*self.vsgn(y)) + l*(dy**2 + (fv*o)**2 * (a**2 - (y - p*self.vsgn(y))**2))*dy
+            Hi = lambda y, dy, fv: -(fv*o)**2 * (y - p*self.vsgn(y)) + l*(dy**2 + (fv*o)**2 * (a**2 - (y - p*self.vsgn(y))**2))*dy
 
-        f = lambda x: 0.35*x**3 - 1.59*x**2 + 2.93*x
+            f = lambda x: 0.35*x**3 - 1.59*x**2 + 2.93*x
 
-        # f_max = lambda v, i: f(v) / f(self.people[i].vmax)
-        # f_max = lambda v, i: v / self.people[i].vmax
-        f_max = lambda v, i: 1
+            # f_max = lambda v, i: f(v) / f(self.people[i].vmax)
+            # f_max = lambda v, i: v / self.people[i].vmax
+            f_max = lambda v, i: 1
 
-        H = sum(
-            self.people[i].m * Hi(peds[i], dpeds[i], f_max(self.people[i].v, i)) for i in range(self.N)
-        )
+            H = sum(
+                self.people[i].m * Hi(peds[i], dpeds[i], f_max(self.people[i].v, i)) for i in range(self.N)
+            )
 
-        # self.get('m') * Hi(peds[i], dpeds[i], f_max(self.people[i].v, i))
-        h = 0.1
-        O = 1.
+            # self.get('m') * Hi(peds[i], dpeds[i], f_max(self.people[i].v, i))
+            h = 0.1
+            O = 1.
 
-        bridge_hz = 1.03
-        O = (bridge_hz*2*np.pi) ** 2
-        h = bridge_hz*2*np.pi * 0.04
+            bridge_hz = 1.03
+            O = (bridge_hz*2*np.pi) ** 2
+            h = bridge_hz*2*np.pi * 0.04
 
-        ddx = 1/(M - r) * (H - 2*h*dx - O**2 * x)
+            ddx = 1/(M - r) * (H - 2*h*dx - O**2 * x)
 
-        return np.hstack(
-            [dx, ddx] + \
-            [
-                dpeds[i] for i in range(self.N)
-            ] + \
-            [
-                -ddx - Hi(peds[i], dpeds[i], f_max(self.people[i].v, i)) for i in range(self.N)
-            ] + [vs, self.social(zs, vs)])
+            return np.hstack(
+                [dx, ddx] + \
+                [
+                    dpeds[i] for i in range(self.N)
+                ] + \
+                [
+                    -ddx - Hi(peds[i], dpeds[i], f_max(self.people[i].v, i)) for i in range(self.N)
+                ] + [vs, self.social(zs, vs)])
+        except:
+            print(x)
+            print(dx)
 
     def __iter__(self):
         for i in range(len(self.people)):
@@ -334,8 +353,6 @@ class Person(Simulation):
         self.m = m
         self.L = L
 
-
-
     '''
     z' = v
     v' = a*(v - vmax) - v*sum_j(F(z - zj))
@@ -351,38 +368,8 @@ class Person(Simulation):
         (self.alpha*(v - self.vmax) - v*forces)])
 
 
-    def ode_bridge(self, t, U):
-        z, v, y, dy, x, dx = U # z, v pedestrian sagittal; y, dy pedestrian lateral; x, dx bridge
-
-
-        f_max = lambda x: self.sim.f(x) / self.sim.f(self.vmax)
-
-        M = 5060
-        r = sum([person.m for person in self.sim.people])
-        H = sum([person.m * self.sim.Hi(person.y, person.dy, f_max(person.v)) if person != self else self.sim.Hi(y, dy, 1) for person in self.sim.people]) # should be constant for all pedestrians
-        h = 0.1
-        O = 1.
-
-        # model3_x = (1/(1-mu**2)) * ( 2*h*mu*dx + mu*omega**2 * x + w**2*(y-p* vsgn(y)) - lambd*(dy**2 +v**2 *(a**2-(y-p* vsgn(y))**2))*dy)
-        # model3_y = (1/(1-mu**2)) * ( mu*(lambd*(dy**2 +v**2 *(a**2-(y-p* vsgn(y))**2))*dy - w**2*(y-p* vsgn(y))) - 2*h*dx - omega**2 * x)
-        # model3_x = (1/(1-r)) * ( 2*h*dx + Omega**s2 * x + f_max(v)**w**2*(y-p* self.vsgn(y)) - lambd*(dy**2 +v**2 *(a**2-(y-p* self.vsgn(y))**2))*dy)
-        # model3_y = (1/(1-r)) * ( r*(lambd*(dy**2 +v**2 *(a**2-(y-p* self.vsgn(y))**2))*dy - f_max(v)*w**2*(y-p* self.vsgn(y))) - 2*h*dx - Omega**2 * x)
-
-        ddx = 1/(M - r) * (H - 2*h*dx - O**2 * x)
-
-        # 1/(M - r) =
-
-        return np.hstack(
-            [[0, 0], # self.ode(_, [z, v]), # since sagittal and lateral motion are somewhat decoupled
-             dy, # dy
-             -ddx - self.sim.Hi(y, dy, 1), # f_max(v)), # where the sagittal and lateral frequencies are linked
-             dx,
-             ddx])
-
-
-
 # %%
-N = 10
+N = 20
 D = 1
 
 z0 = lambda: np.random.uniform(low=0, high=5)
@@ -395,8 +382,8 @@ dx = -0.005
 m0 = 70
 L0 = 1.12
 
-vmax = 1.5
-alpha = lambda: -0.1 # -1*(0.1*np.random.uniform(0, 1) + 0.01*np.random.uniform(0, 5)) # -0.1
+vmax = lambda: np.random.uniform(1.3, 1.8) # 1.5
+alpha = lambda: -1*(0.1*np.random.uniform(0, 1) + 0.01*np.random.uniform(0, 5)) # -0.1
 
 def H(y, dy, t=None):
     if y >= 0:
@@ -413,7 +400,7 @@ def F(zi, zj):
 
 sim = Simulation(N, D, z0, v0, y, dy, H, m0, L0, vmax, alpha, F, x, dx, 'hsv', 'cool')
 
-time = np.linspace(0, 50, 501)
+time = np.linspace(0, 10, 101)
 # %%
 # sim.simulate(time, reset=True)
 
@@ -422,8 +409,8 @@ y0 = lambda: np.random.uniform(-0.02, 0.02)
 dy0 = lambda: np.random.uniform(-0.001, 0.001)
 
 initial = [x, dx] + [y0() for i in range(N)] + [dy0() for i in range(N)] + [z0() for i in range(N)] + [v0() for i in range(N)]
-
-sol = odeint(sim.ode_bridge_full, y0=initial, t=time, tfirst=True)
+loop = 3
+sol = odeint(sim.ode_bridge_full, y0=initial, t=time, tfirst=True, args=(loop, ))
 # %%
 S = sol.transpose()
 
@@ -460,47 +447,22 @@ plt.plot(bridge.transpose(), dbridge.transpose()); # bridge position
 plt.title('bridge position vs velocity')
 
 # %%
-plt.plot(sim.data[0, 4, :], sim.data[0, 5, :]); # bridge phase diagram
-# %%
-plt.plot(sim.data[0, 0, :], sim.data[0, 1, :]); # sagittal phase diagram
-# %%
-plt.plot(sim.data[0, 2, :], sim.data[0, 3, :]); # lateral phase diagram
-# %%
-plt.plot(sim.data[:, 4, :], sim.data[:, 5, :]); # bridge phase diagram
-
-plt.plot(sim.data[:, 0, :], sim.data[:, 1, :]);
-
-plt.plot(sim.data[:, 4])
-
-# %%
 import matplotlib.animation as animation
 
-fig, axs = plt.subplots(figsize=(12, 2), dpi=120)
+fig, axs = plt.subplots(1, 2, figsize=(12, 2), dpi=160, gridspec_kw={'width_ratios': [3, 1]})
 
 vector_color = plt.cm.get_cmap('cool')
 def animate(frame):
-    plt.cla()
-    plt.xlim(0, 20)
-    plt.ylim(peds.min(), peds.max())
+    axs[0].cla()
+    axs[0].set_title(f'time: {round(time[frame], 2)}')
+    axs[0].set_xlim(zs[:, frame].min() - 3, zs[:, frame].max() + 3)
+    axs[0].set_ylim(peds.min() - 0.1, peds.max() + 0.1)
+    sim.plot_dots_from_data(frame, zs, vs, peds, dpeds, axs[0])
 
-    sim.plot_dots_from_data(frame, zs, vs, peds, dpeds)
+    axs[1].cla()
+    axs[1].set_title('bridge velocity')
+    axs[1].plot(time[:frame], dbridge[:frame])
 
 anim = animation.FuncAnimation(fig, animate, frames=len(time))
 
-anim.save('figs/2d-working.mp4')
-# %%
-def test(t, S):
-    y, dy = S
-    return [dy, Hi(y, dy, 1)]
-
-sol = solve_ivp(test, (0, 10), [0, 1])
-plt.plot(sol.t, sol.y[1])
-
-# %%
-nu = o
-
-r = sim.get('m') / (M + sim.get('m').sum())
-
-Hi = lambda y, dy, fv: -o**2 * (y - p*self.vsgn(y)) + l*(dy**2 + nu**2 * (a**2 - (y - p*self.vsgn(y)))**2)*dy
-
-ddx = 1 / (1 - r.sum()) * ()
+anim.save('figs/2d-social-working.mp4')
