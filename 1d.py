@@ -233,6 +233,15 @@ class Simulation:
 
         return forces
 
+    '''
+    integrates wrt the whole system
+    incorporates bridge dynamics
+
+    Mx'' + 2hx' + Omega^2 x = -sum_i=1^N m_i y_i''
+    y_i'' + H(y_i, y_i', t) = -x''
+
+    where H comes from model 3
+    '''
     def ode_bridge_full(self, t, S):
         '''
         current full pedestrian-bridge ode simulation
@@ -245,7 +254,7 @@ class Simulation:
         zs = S[2:][2 * self.N:3 * self.N] # forward pos
         vs = S[2:][3 * self.N:4 * self.N] # forward vel
 
-        M = 10060
+        M = 5060
         r = self.get('m').sum()
 
         # l = 0.1
@@ -341,16 +350,7 @@ class Person(Simulation):
         return np.hstack([np.array([v]),
         (self.alpha*(v - self.vmax) - v*forces)])
 
-    '''
-    integrates wrt a single pedestrian
-    incorporates bridge dynamics
 
-    Mx'' + 2hx' + Omega^2 x = -sum_i=1^N m_i y_i''
-    y_i'' + H(y_i, y_i', t) = -x''
-
-    where H comes from model 3
-
-    '''
     def ode_bridge(self, t, U):
         z, v, y, dy, x, dx = U # z, v pedestrian sagittal; y, dy pedestrian lateral; x, dx bridge
 
@@ -382,7 +382,7 @@ class Person(Simulation):
 
 
 # %%
-N = 1
+N = 10
 D = 1
 
 z0 = lambda: np.random.uniform(low=0, high=5)
@@ -413,7 +413,7 @@ def F(zi, zj):
 
 sim = Simulation(N, D, z0, v0, y, dy, H, m0, L0, vmax, alpha, F, x, dx, 'hsv', 'cool')
 
-time = np.linspace(0, 10, 101)
+time = np.linspace(0, 50, 501)
 # %%
 # sim.simulate(time, reset=True)
 
@@ -434,18 +434,21 @@ dpeds = S[2:][N:2 * N] # lateral vel
 zs = S[2:][2 * N:3 * N] # forward pos
 vs = S[2:][3 * N:4 * N] # forward vel
 
-# %% pedestrian positions
+# %% lateral positions
 plt.plot(time, peds.transpose());
-# %% pedestrian velocities
+plt.title('lateral position')
+# %% lateral velocities
 plt.plot(time, dpeds.transpose());
-# %%
+plt.title('lateral velocity')
+# %% phase diagram of lateral direction
 plt.plot(peds.transpose(), dpeds.transpose());
-
+plt.title('lateral position vs velocity')
 # %%
 plt.plot(time, zs.transpose()); # forward position
+plt.title('forward position')
 # %%
-plt.plot(time, peds.transpose()); # lateral position
-plt.title('lateral position')
+plt.plot(time, vs.transpose()); # lateral position
+plt.title('forward velocity')
 # %%
 plt.plot(time, bridge.transpose()); # bridge position
 plt.title('bridge position')
@@ -453,8 +456,8 @@ plt.title('bridge position')
 plt.plot(time, dbridge.transpose()); # bridge position
 plt.title('bridge velocity')
 # %%
-plt.plot(x.transpose(), dx.transpose()); # bridge position
-plt.title('bridge position')
+plt.plot(bridge.transpose(), dbridge.transpose()); # bridge position
+plt.title('bridge position vs velocity')
 
 # %%
 plt.plot(sim.data[0, 4, :], sim.data[0, 5, :]); # bridge phase diagram
@@ -477,14 +480,14 @@ fig, axs = plt.subplots(figsize=(12, 2), dpi=120)
 vector_color = plt.cm.get_cmap('cool')
 def animate(frame):
     plt.cla()
-    plt.xlim(0, 10)
+    plt.xlim(0, 20)
     plt.ylim(peds.min(), peds.max())
 
     sim.plot_dots_from_data(frame, zs, vs, peds, dpeds)
 
 anim = animation.FuncAnimation(fig, animate, frames=len(time))
 
-anim.save('figs/new-all.mp4')
+anim.save('figs/2d-working.mp4')
 # %%
 def test(t, S):
     y, dy = S
