@@ -27,9 +27,9 @@ class Simulation:
         self.a = 0.47 # limit_cycle_amplitude_parameter
         self.p = 0.63
 
-        @jit(nb.float64[:](nb.float64[:], nb.float64[:], nb.float64[:], nb.float64[:], nb.float64, nb.float64, nb.float64))
-        def H(y, dy, fv, o, a, l, p):
-            return -(fv*o)**2 * (y - p*(1 - 2 * (y < 0))) + l*(dy**2 + (fv*o)**2 * (a**2 - (y - p*(1 - 2 * (y < 0)))**2))*dy
+        @jit(nb.float64[:](nb.float64[:], nb.float64[:], nb.float64[:], nb.float64, nb.float64, nb.float64))
+        def H(y, dy, o, a, l, p):
+            return -(o)**2 * (y - p*(1 - 2 * (y < 0))) + l*(dy**2 + (o)**2 * (a**2 - (y - p*(1 - 2 * (y < 0)))**2))*dy
 
         self.H = H # np.vectorize(H)
         # self.Hi = lambda y, dy, fv: (fv*o)**2 * (y - p*self.vsgn(y)) - l*(dy**2 - (fv*o)**2 * (y - p*self.vsgn(y))**2 + (fv*o)**2 * a**2)*dy
@@ -219,6 +219,7 @@ class Simulation:
         '''
 
         # self.history.append(S)
+
         x = S[0, None]
         dx = S[1, None]
         peds = S[2:][:self.N] # lateral pos
@@ -250,7 +251,7 @@ class Simulation:
 
         r = self.get('m') / (M + self.get('m'))
 
-        H = self.H(peds, dpeds, self.f_max(vs, self.get('vmax')), o, self.a, self.l, self.p)
+        H = self.H(peds, dpeds, o*self.f_max(vs, self.get('vmax')), self.a, self.l, self.p)
 
         ddx = self.ddx(x, dx, H, r, self.h, self.O)
 
@@ -265,6 +266,7 @@ class Simulation:
         current full pedestrian-bridge ode simulation
         '''
         # self.history.append(S)
+        # S = [x, dx, y1, ..., yn, y1', ..., yn', z1, ..., zn, v1, ..., vn]' = [dx, ddx, dy1, ..., dyn, ddy1, ..., ddyn]
         x, dx = S[0:2]
         peds = S[2:][:self.N] # lateral pos
         dpeds = S[2:][self.N:2 * self.N] # lateral vel
@@ -273,7 +275,7 @@ class Simulation:
         vs = S[2:][3 * self.N:4 * self.N] # forward vel
 
         if loop:
-            for i in range(len(zs)):
+            for i in range(self.N):
                 if zs[i] > loop:
                     zs[i] = 0.00
                     vs[i] = 0.01 # need to change their entering velocity
@@ -282,6 +284,7 @@ class Simulation:
         a = 0.47 # limit_cycle_amplitude_parameter
         p = 0.63
 
+        # o^2 = g / L / 2
         o = np.sqrt(9.81/self.get('L')) / 2 # 1.04
 
 
@@ -320,11 +323,11 @@ class Simulation:
         # H = sum(
         #    self.people[i].m * Hi(peds[i], dpeds[i], f_max(self.people[i].v, i)) for i in range(self.N)
         # )
+        # M x'' + 2h x' + O^2 x
 
         bridge_hz = 1.03
         O = (bridge_hz*2*np.pi)
         h = bridge_hz*2*np.pi * 0.04
-
         r = self.get('m') / (M + self.get('m'))
 
         # ddx = 1/(M - r0) * (H - h*dx - O**2 * x)
@@ -388,7 +391,6 @@ class Person(Simulation):
     '''
     def ode(self, t, x):
         z, v = x
-
         forces = 0
         for person in self.sim.people:
             if self != person:
@@ -398,7 +400,7 @@ class Person(Simulation):
 
 
 # %%
-N = 100
+N = 10
 D = 1
 
 def F(zi, zj):
@@ -410,12 +412,13 @@ def F(zi, zj):
 
 z0 = lambda: np.random.uniform(low=0, high=5)
 v0 = lambda: np.random.normal(loc=0.8, scale=0.01)
+
 y = 0.008
 dy = 0.0001
 x = 0.000
 dx = 0.0005
 
-sigma = 0.0
+sigma = 1
 m0 = lambda: np.random.normal(76.9, 10*sigma) # 70
 L0 = lambda: np.random.normal(1.17, 0.092*sigma)
 
@@ -428,8 +431,8 @@ time = np.linspace(0, 1, 11)
 
 sim.plot_parameters()
 # %%
-y0 = lambda: 0.1 # np.random.uniform(-0.2, 0.2)
-dy0 = lambda: 0.1 # np.random.uniform(-0.1, 0.1)
+y0 = lambda: np.random.uniform(-0.2, 0.2)
+dy0 = lambda: np.random.uniform(-0.1, 0.1)
 
 initial = np.array([x, dx] + [y0() for i in range(N)] + [dy0() for i in range(N)] + [z0() for i in range(N)] + [v0() for i in range(N)])
 loop = None # 10
@@ -447,7 +450,8 @@ dpeds = S[2:][N:2 * N] # lateral vel
 zs = S[2:][2 * N:3 * N] # forward pos
 vs = S[2:][3 * N:4 * N] # forward vel
 # %% lateral positions
-plt.plot(time, peds.transpose());
+sgn = lambda y: 1 - 2 * (y < 0)
+plt.plot(time, sim.p - peds.transpose()*sgn(peds.transpose()));
 plt.title('lateral position');
 # %% lateral velocities
 # plt.plot(np.cbrt(vs.transpose() / sim.get('L')**2)*2);
@@ -473,7 +477,17 @@ plt.title('bridge velocity')
 plt.plot(bridge.transpose(), dbridge.transpose()); # bridge position
 plt.title('bridge position vs velocity')
 
+# %%
+# f = lambda v, vmax: (0.35*v*v*v - 1.59*v*v + 2.93*v) / (0.35*vmax*vmax*vmax - 1.59*vmax*vmax + 2.93*vmax)
+#
+# test = np.array([sim.f_max(vs[:, i], sim.get('vmax')) for i in range(len(time))])
+#
+# for i in range(len(time)):
+#     plt.plot(vs[:, i], sim.f_max(vs[:, i], sim.get('vmax')))
+
+
  # %%
+
 import matplotlib.animation as animation
 
 fig, axs = plt.subplots(1, 2, figsize=(12, 2), dpi=160, gridspec_kw={'width_ratios': [3, 1]})
@@ -482,8 +496,8 @@ vector_color = plt.cm.get_cmap('cool')
 def animate(frame):
     axs[0].cla()
     axs[0].set_title(f'time: {round(time[frame], 2)}')
-    # axs[0].set_xlim(zs[:, frame].min() - 3, zs[:, frame].max() + 3)
-    axs[0].set_xlim(0, loop)
+    axs[0].set_xlim(zs[:, frame].min() - 3, zs[:, frame].max() + 3)
+    # axs[0].set_xlim(0, loop)
     axs[0].set_ylim(peds.min() - 0.1, peds.max() + 0.1)
     sim.plot_dots_from_data(frame, zs, vs, peds, dpeds, axs[0])
 
