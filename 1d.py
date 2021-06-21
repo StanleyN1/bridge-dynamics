@@ -22,6 +22,7 @@ class Simulation:
 
         self.vsgn = np.vectorize(lambda y: 1 - 2 * (y < 0))
 
+        self.v_to_o = lambda v, L: 2 * np.cbrt(v / (L**2 * (1.352/1.34)))
 
         self.l = 23.25 # limit_cycle_damping_parameter
         self.a = 0.47 # limit_cycle_amplitude_parameter
@@ -31,6 +32,11 @@ class Simulation:
         def H(y, dy, o, a, l, p):
             return -(o)**2 * (y - p*(1 - 2 * (y < 0))) + l*(dy**2 + (o)**2 * (a**2 - (y - p*(1 - 2 * (y < 0)))**2))*dy
 
+        @jit([nb.float64[:](nb.float64[:], nb.float64[:], nb.float64[:]), nb.float64[:](nb.float64[:], nb.float64[:], nb.float64)])
+        def H1(y, o, p):
+            return -(o)**2 * (p - y)
+
+        self.H1 = H1
         self.H = H # np.vectorize(H)
         # self.Hi = lambda y, dy, fv: (fv*o)**2 * (y - p*self.vsgn(y)) - l*(dy**2 - (fv*o)**2 * (y - p*self.vsgn(y))**2 + (fv*o)**2 * a**2)*dy
         self.bridge_hz = 1.03
@@ -51,9 +57,9 @@ class Simulation:
 
         @jit(nb.float64[:](nb.float64[:], nb.float64[:]))
         def f_max(v, vmax):
-            return (0.35*v*v*v - 1.59*v*v + 2.93*v) / (0.35*vmax*vmax*vmax - 1.59*vmax*vmax + 2.93*vmax)
+            # return (0.35*v*v*v - 1.59*v*v + 2.93*v) / (0.35*vmax*vmax*vmax - 1.59*vmax*vmax + 2.93*vmax)
             # return v / vmax
-            # return np.ones(len(v))
+            return np.ones(len(v))
 
         self.f_max = f_max # np.vectorize(f_max)
 
@@ -133,50 +139,6 @@ class Simulation:
             return np.array([self.dx])
         return np.array([getattr(person, prop) for person in self.people])
 
-    def get_forward_state(self):
-        state = np.array([np.array([person.z, person.v]) for person in self.people]).reshape(-1, 2)
-        return state
-
-    def get_lateral_state(self):
-        state = np.array([np.array([person.y, person.dy]) for person in self.people]).reshape(-1, 2)
-        return state
-
-    def get_bridge_state(self):
-        state = np.array([self.x, self.dx]).reshape(-1, 2)
-        return state
-
-    def get_position(self, idx):
-        return self.data[:, 0, idx]
-
-    def get_velocity(self, idx):
-        return self.data[:, 1, idx]
-
-    def get_bridge_position(self, idx):
-        return self.data[:, 2, idx]
-
-    def get_bridge_velocity(self, idx):
-        return self.data[:, 3, idx]
-
-    def plot_forward_position(self, time):
-        if self.data[:, 0].any():
-            for i in range(self.N):
-                plt.plot(time, self.data[i, 0][0:len(time)], color=self.z_color(i))
-
-    def plot_forward_velocity(self, time):
-        if self.data[:, 1].any():
-            for i in range(self.N):
-                plt.plot(time, self.data[i, 1][0:len(time)], color=self.z_color(i))
-
-    def plot_lateral_position(self, time):
-        if self.data[:, 2].any():
-            for i in range(self.N):
-                plt.plot(time, self.data[i, 2][0:len(time)], color=self.z_color(i))
-
-    def plot_lateral_velocity(self, time):
-        if self.data[:, 3].any():
-            for i in range(self.N):
-                plt.plot(time, self.data[i, 3][0:len(time)], color=self.z_color(i))
-
     def plot_forward_dots(self, frame):
         for i in range(self.N):
             pos, vel = self.data[i, 0:2, frame]
@@ -195,14 +157,6 @@ class Simulation:
             axs.scatter(forward_pos[i, frame], lateral_pos[i, frame], color=self.z_color(i), s=100)
             axs.arrow(forward_pos[i, frame], lateral_pos[i, frame], forward_vel[i, frame], lateral_vel[i, frame], color=self.v_color(forward_vel[i, frame]/self.vmax()))
 
-    def social2(self, z, v): # assuming F function is equal
-        forces = np.zeros(self.N)
-        for i in range(self.N):
-            social_force = sum([self.F(z[i], person.z) for person in self.people if self != person])
-            forces[i] = self.get('alpha')[i]*(v[i] - self.get('vmax')[i]) - v[i]*social_force
-
-        return forces
-
     '''
     integrates wrt the whole system
     incorporates bridge dynamics
@@ -212,13 +166,12 @@ class Simulation:
 
     where H comes from model 3
     '''
-
     def ode_bridge_full_optimized(self, t, S, loop):
         '''
         numpy optimized
         '''
 
-        # self.history.append(S)
+        self.history.append(S)
 
         x = S[0, None]
         dx = S[1, None]
@@ -235,7 +188,7 @@ class Simulation:
                     vs[i] = 0.01 # need to change their entering velocity
 
 
-        o = np.sqrt(9.81/self.get('L')) / 2 # 1.04
+        o = np.sqrt(9.81/self.get('L'))  # self.v_to_o(vs, self.get('L')) # np.sqrt(9.81/self.get('L')) / 2 # 1.04 #  #
 
         self.x = x
         self.dx = dx
@@ -247,11 +200,16 @@ class Simulation:
 
         M = 113e3
 
-        # parameters from kevin's code
+        try: # proportionally scale
+            dpeds = dpeds * self.f_max(np.abs(vs), np.abs(self.history[-2][2:][3 * self.N:4 * self.N]))
+        except:
+            pass
 
         r = self.get('m') / (M + self.get('m'))
 
-        H = self.H(peds, dpeds, o*self.f_max(vs, self.get('vmax')), self.a, self.l, self.p)
+        H = self.H(peds, dpeds, o*self.f_max(np.abs(vs), np.abs(self.get('vmax'))), self.a, self.l, self.p)
+
+        # H = self.H1(peds, o*self.f_max(vs, self.get('vmax')), self.p)
 
         ddx = self.ddx(x, dx, H, r, self.h, self.O)
 
@@ -260,89 +218,6 @@ class Simulation:
             dpeds,
             -ddx - H,
             vs, self.social(zs, vs, self.get('z'), self.get('vmax'), self.get('alpha'), self.N)])
-
-    def ode_bridge_full(self, t, S, loop):
-        '''
-        current full pedestrian-bridge ode simulation
-        '''
-        # self.history.append(S)
-        # S = [x, dx, y1, ..., yn, y1', ..., yn', z1, ..., zn, v1, ..., vn]' = [dx, ddx, dy1, ..., dyn, ddy1, ..., ddyn]
-        x, dx = S[0:2]
-        peds = S[2:][:self.N] # lateral pos
-        dpeds = S[2:][self.N:2 * self.N] # lateral vel
-
-        zs = S[2:][2 * self.N:3 * self.N] # forward pos
-        vs = S[2:][3 * self.N:4 * self.N] # forward vel
-
-        if loop:
-            for i in range(self.N):
-                if zs[i] > loop:
-                    zs[i] = 0.00
-                    vs[i] = 0.01 # need to change their entering velocity
-
-        l = 23.25 # limit_cycle_damping_parameter
-        a = 0.47 # limit_cycle_amplitude_parameter
-        p = 0.63
-
-        # o^2 = g / L / 2
-        o = np.sqrt(9.81/self.get('L')) / 2 # 1.04
-
-
-
-        Hi = lambda y, dy, fv: -(fv*o)**2 * (y - p*self.vsgn(y)) + l*(dy**2 + (fv*o)**2 * (a**2 - (y - p*self.vsgn(y))**2))*dy
-        # Hi = lambda y, dy, fv: -(o + fv)**2 * (y - p*self.vsgn(y)) + l*(dy**2 + (o + fv)**2 * (a**2 - (y - p*self.vsgn(y))**2))*dy
-
-        f = lambda x: 0.35*x**3 - 1.59*x**2 + 2.93*x
-
-        # implementing idea from carroll et al 2013 (eq 21)
-        # f_T = lambda v, i: o * ((f(v) / f(self.people[i].vmax)) - 1)
-        # dpeds = (f(vs) / f(self.get('v'))) * dpeds # need to renormalize velocity (use the fact that pedestrian data hasn't been updated)
-
-
-        self.x = x
-        self.dx = dx
-        for i in range(self.N): # update person position and velocity
-            self.people[i].z = zs[i]
-            self.people[i].v = vs[i]
-            self.people[i].y = peds[i]
-            self.people[i].dy = dpeds[i]
-
-        M = 113e3
-        # l = 0.1
-        # o = 0.7
-        # p = 0.3
-        # a = 0.2
-        # nu = 0.67
-
-        # parameters from kevin's code
-
-        # f_max = lambda v, i: f(v) / f(self.get('vmax')[i])
-        # f_max = lambda v, i: v / self.people[i].vmax
-        f_max = lambda v, i: 1
-
-        # H = sum(
-        #    self.people[i].m * Hi(peds[i], dpeds[i], f_max(self.people[i].v, i)) for i in range(self.N)
-        # )
-        # M x'' + 2h x' + O^2 x
-
-        bridge_hz = 1.03
-        O = (bridge_hz*2*np.pi)
-        h = bridge_hz*2*np.pi * 0.04
-        r = self.get('m') / (M + self.get('m'))
-
-        # ddx = 1/(M - r0) * (H - h*dx - O**2 * x)
-        H = Hi(peds, dpeds, f_max(vs, np.arange(len(vs))))
-        print(x)
-        ddx = 1 / (1 - r.sum()) * ((H*r).sum() - h*dx - (O**2)*x)
-
-        return np.hstack(
-            [dx, ddx] + \
-            [
-                dpeds[i] for i in range(self.N)
-            ] + \
-            [
-                -ddx - Hi(peds, dpeds, f_max(vs, np.arange(len(vs))))
-            ] + [vs, self.social2(zs, vs)])
 
     def plot_parameters(self):
         parameters = ['m', 'alpha', 'vmax', 'L']
@@ -353,6 +228,17 @@ class Simulation:
             ax[i].set_title(p)
 
         plt.tight_layout()
+
+    @staticmethod
+    def parse(S, N):
+        bridge, dbridge = S[0:2]
+        peds = S[2:][:N] # lateral pos
+        dpeds = S[2:][N:2 * N] # lateral vel
+
+        zs = S[2:][2 * N:3 * N] # forward pos
+        vs = S[2:][3 * N:4 * N] # forward vel
+
+        return bridge, dbridge, peds, dpeds, zs, vs
 
     def __iter__(self):
         for i in range(len(self.people)):
@@ -400,7 +286,9 @@ class Person(Simulation):
 
 
 # %%
-N = 10
+
+
+N = 120
 D = 1
 
 def F(zi, zj):
@@ -410,35 +298,33 @@ def F(zi, zj):
     heaviside = lambda x: 1 if x > 0 else 0
     return kappa*heaviside(zj - zi)*np.exp(-c*(zj - zi))
 
-z0 = lambda: np.random.uniform(low=0, high=5)
-v0 = lambda: np.random.normal(loc=0.8, scale=0.01)
+z0 = lambda: np.random.uniform(low=0, high=1)
+v0 = lambda: np.random.normal(loc=0.8, scale=0.1)
 
 y = 0.008
 dy = 0.0001
 x = 0.000
-dx = 0.0005
+dx = 0.1
 
-sigma = 1
+sigma = 0.05
 m0 = lambda: np.random.normal(76.9, 10*sigma) # 70
 L0 = lambda: np.random.normal(1.17, 0.092*sigma)
 
-vmax = lambda: 1.5 # np.random.uniform(1.3, 1.8) # 1.5
+vmax = 1.5 # lambda: np.random.normal(1.5, 0.125) # 1.5 # np.random.uniform(1.3, 1.8) # 1.5
 alpha = lambda: -0.1 # -1*(0.1*np.random.uniform(0, 1) + 0.01*np.random.uniform(0, 5)) # -0.1
 
 sim = Simulation(N, D, z0, v0, y, dy, m0, L0, vmax, alpha, F, x, dx, 'hsv', 'cool')
 
-time = np.linspace(0, 1, 11)
-
 sim.plot_parameters()
 # %%
-y0 = lambda: np.random.uniform(-0.2, 0.2)
+y0 = lambda: np.random.uniform(-0.1, 0.1)
 dy0 = lambda: np.random.uniform(-0.1, 0.1)
 
 initial = np.array([x, dx] + [y0() for i in range(N)] + [dy0() for i in range(N)] + [z0() for i in range(N)] + [v0() for i in range(N)])
 loop = None # 10
 
 # sol, d = odeint(sim.ode_bridge_full, y0=initial, t=time, full_output = 1, tfirst=True, args=(loop, ))
-sol = solve_ivp(sim.ode_bridge_full_optimized, t_span=(0, 50), y0=initial, args=(loop, ), method='RK45')
+sol = solve_ivp(sim.ode_bridge_full_optimized, t_span=(0, 100), y0=initial, args=(loop, ), method='RK23')
  # %%
 time = sol.t
 S = sol.y
@@ -449,32 +335,48 @@ dpeds = S[2:][N:2 * N] # lateral vel
 
 zs = S[2:][2 * N:3 * N] # forward pos
 vs = S[2:][3 * N:4 * N] # forward vel
+
 # %% lateral positions
 sgn = lambda y: 1 - 2 * (y < 0)
-plt.plot(time, sim.p - peds.transpose()*sgn(peds.transpose()));
+# plt.plot(time, sim.p - peds.transpose()*sgn(peds.transpose()));
+plt.plot(time, peds.T)
 plt.title('lateral position');
+
 # %% lateral velocities
 # plt.plot(np.cbrt(vs.transpose() / sim.get('L')**2)*2);
 
-plt.plot(time, dpeds.transpose());
+plt.plot(time, dpeds.T);
 plt.title('lateral velocity')
 # %% phase diagram of lateral direction
-plt.plot(peds.transpose(), dpeds.transpose());
+plt.plot(peds.T, dpeds.T);
 plt.title('lateral position vs velocity')
 # %%
-plt.plot(time[:], zs.transpose()[:]); # forward position
+plt.plot(time[:], zs.T[:]); # forward position
 plt.title('forward position')
 # %%
-plt.plot(time, vs.transpose()); # lateral position
+plt.plot(time, vs.T); # forward position
 plt.title('forward velocity')
+# %% frequencies
+# (np.sqrt(9.81/ sim.get('L')) / vs.T**0.58).std()
+#
+#
+# sim.f(vs[:, 3]) / sim.f(sim.get('vmax'))
+#
+# np.sqrt(9.81/ sim.get('L')) * vs.T / sim.get('vmax')
+#
+# plt.plot(time, sim.v_to_o(vs.T, sim.get('L')));
+
 # %%
-plt.plot(time, bridge.transpose()); # bridge position
+plt.plot(time, (bridge.T)); # bridge position
 plt.title('bridge position')
 # %%
-plt.plot(time, dbridge.transpose()); # bridge position
+plt.plot(time, dbridge.T); # bridge position
 plt.title('bridge velocity')
 # %%
-plt.plot(bridge.transpose(), dbridge.transpose()); # bridge position
+plt.plot(time, np.gradient(dbridge, time)); # bridge position
+plt.title('bridge acceleration')
+# %%
+plt.plot(bridge.T, dbridge.T); # bridge position
 plt.title('bridge position vs velocity')
 
 # %%
@@ -494,6 +396,7 @@ fig, axs = plt.subplots(1, 2, figsize=(12, 2), dpi=160, gridspec_kw={'width_rati
 
 vector_color = plt.cm.get_cmap('cool')
 def animate(frame):
+    frame = frame * 4
     axs[0].cla()
     axs[0].set_title(f'time: {round(time[frame], 2)}')
     axs[0].set_xlim(zs[:, frame].min() - 3, zs[:, frame].max() + 3)
@@ -505,10 +408,10 @@ def animate(frame):
     axs[1].set_title('bridge velocity')
     axs[1].plot(time[:frame], dbridge[:frame])
 
-anim = animation.FuncAnimation(fig, animate, frames=len(time) - 150)
+anim = animation.FuncAnimation(fig, animate, frames=len(time))
 
-anim.save('figs/2d-social-good.mp4')
-# %%
+anim.save('figs/optimized.mp4')
+# %% WARNING: took over 6 gb of harddrive space to save all data
 import tqdm
 D = 1
 
@@ -530,42 +433,100 @@ v0 = lambda: np.random.normal(loc=0.8, scale=0.01)
 y = 0.008
 dy = 0.0001
 x = 0.000
-dx = -0.005
+dx = 0.0005
 
-sigma = 0.05
-m0 = lambda: np.random.normal(76.9, 10*sigma) # 70
-L0 = lambda: np.random.normal(1.17, 0.092*sigma)
-y0 = lambda: np.random.uniform(-0.2, 0.2)
+# sigma = 0.05
+# m0 = lambda: np.random.normal(76.9, 10*sigma) # 70
+# L0 = lambda: np.random.normal(1.17, 0.092*sigma)
+y0 = lambda: np.random.uniform(-0.1, 0.1)
 dy0 = lambda: np.random.uniform(-0.1, 0.1)
 
 vmax = 1.5 # lambda: np.random.uniform(1.3, 1.8) # 1.5
 alpha = -0.1 #  lambda: -1*(0.1*np.random.uniform(0, 1) + 0.01*np.random.uniform(0, 5)) # -0.1
 
-maxs = []
-dmaxs = []
 data = []
 
 loop = None
+sigmas = [0.05, 0.175, 0.25, 0.5]# np.linspace(0, 1, 21)
 Ns = np.arange(0, 151, 5)
-times = []
-for N in tqdm.tqdm(Ns):
-    sols = []
-    time = []
-    for _ in range(1):
-        sim = Simulation(N, D, z0, v0, y, dy, m0, L0, vmax, alpha, F, x, dx, 'hsv', 'cool')
+# %%
+for sigma in tqdm.tqdm(sigmas):
+    m0 = lambda: np.random.normal(76.9, 10*sigma) # 70
+    L0 = lambda: np.random.normal(1.17, 0.092*sigma)
+    for N in tqdm.tqdm(Ns):
+        for _ in range(3):
+            sim = Simulation(N, D, z0, v0, y, dy, m0, L0, vmax, alpha, F, x, dx, 'hsv', 'cool')
 
-        initial = [x, dx] + [y0() for i in range(N)] + [dy0() for i in range(N)] + [z0() for i in range(N)] + [v0() for i in range(N)]
-        # sol, d = odeint(sim.ode_bridge_full, y0=initial, t=time, full_output = 1, tfirst=True, args=(loop, ))
-        sol = solve_ivp(sim.ode_bridge_full_optimized, t_span=(0, 150), y0=initial, args=(loop, ))
-        times.append(sol.t)
-        sols.append(sol.y[0])
-    times.append(time)
-    data.append(sols)
+            initial = [x, dx] + [y0() for i in range(N)] + [dy0() for i in range(N)] + [z0() for i in range(N)] + [v0() for i in range(N)]
+            # sol, d = odeint(sim.ode_bridge_full, y0=initial, t=time, full_output = 1, tfirst=True, args=(loop, ))
+            sol = solve_ivp(sim.ode_bridge_full_optimized, t_span=(0, 100), y0=initial, args=(loop, ))
+            data.append(sol)
+
+# %%
+step = len(Ns)*3
+
+sigma_data = []
+
+for i in range(len(sigmas)):
+    sigma_data.append(data[i*step: (i+1)*step])
 
 # %%
 
-for i in range(len(Ns)):
-    plt.plot(times[::2][i], data[i][0])
+for i in range(len(sigmas)):
+    for j in range(len(sigma_data[i])):
+        sol = sigma_data[i][j]
+        np.save(f'data/sigma={sigmas[i]}-N={j // 3}-idx={j}', np.vstack([sol.t, sol.y]))
+
 # %%
-for i in range(len(Ns)):
-    plt.scatter(Ns[i], data[i][0].max())
+
+maxs = np.zeros((len(Ns), len(sigmas), 3))
+
+for k in range(len(Ns)):
+    for j in range(len(sigmas)):
+        for i in range(3):
+            count = k
+            test = np.load(f'data/sigma={sigmas[j]}-N={count}-idx={count*3 + i}.npy')
+            t = test[0]
+            bridge, dbridge, peds, dpeds, zs, vs = Simulation.parse(test[1:], Ns[count])
+
+            maxs[k][j][i] = np.abs(bridge[-len(t) // 50:]).max()
+
+
+# %%
+plt.plot(Ns, maxs.mean(1).mean(1))
+plt.xlabel('number of pedestrians')
+plt.ylabel('bridge amplitude')
+plt.title('average bridge amplitude over all runs')
+plt.savefig('figs/mean-all.pdf')
+
+# %%
+plt.plot(Ns, maxs.mean(1))
+plt.xlabel('number of pedestrians')
+plt.ylabel('bridge amplitude')
+plt.legend([1, 2, 3])
+plt.title('average bridge amplitude over all sigmas')
+plt.savefig('figs/mean-runs.pdf')
+# %%
+plt.plot(Ns, maxs.mean(2))
+plt.xlabel('number of pedestrians')
+plt.ylabel('bridge amplitude')
+plt.legend(sigmas)
+plt.title('first run bridge amplitude over all runs')
+plt.savefig('figs/mean-sigmas.pdf')
+# %%
+import matplotlib.colors as colors
+
+initial = [0.0, 0.0] + [y0() for i in range(N)] + [dy0() for i in range(N)] + [z0() for i in range(N)] + [v0() for i in range(N)]
+x = 0.0
+dxs = np.linspace(0, 0.008, 11)
+
+norm = colors.Normalize(0, 0.008)
+
+for dx in dxs:
+    initial[1] = dx
+    sim = Simulation(N, D, z0, v0, y, dy, m0, L0, vmax, alpha, F, x, dx, 'hsv', 'cool')
+    sol = solve_ivp(sim.ode_bridge_full_optimized, t_span=(0, 10), y0=initial, args=(loop, ), method='RK23')
+    bridge, dbridge, peds, dpeds, zs, vs = Simulation.parse(sol.y, N)
+    plt.plot(bridge[::-1], dbridge[::-1], label='$\dot{x}_0$: ' + '%.1E' % dx, color=plt.get_cmap('Greens')(norm(dx)))
+
+plt.legend(bbox_to_anchor=(1.05, 1))
