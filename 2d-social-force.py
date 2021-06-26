@@ -89,13 +89,13 @@ D = 2
 
 width = 25.
 
-z0 = np.stack((np.random.uniform(0, 0.5, N), np.random.uniform(low=-5, high=5, size=(N))), axis=1)
-v0 = np.random.normal(loc=1.34, scale=0.26, size=(N, D))
+z = np.stack((np.random.uniform(0, 0.5, N), np.random.uniform(low=-5, high=5, size=(N))), axis=1)
+v = np.random.normal(loc=1.34, scale=0.26, size=(N, D))
 m = np.ones(N) # np.random.normal(loc=76.9, scale=10., size=N)
 tr = 0.5*np.ones(N) # np.random.normal(loc=0.5, scale=0.1, size=N)
-vd = np.stack((np.ones(N, dtype=np.float64), np.zeros(N, dtype=np.float64)), axis=1)
+vd = np.stack((np.random.uniform(0, 0.75)*np.ones(N, dtype=np.float64), np.zeros(N, dtype=np.float64)), axis=1)
 
-initial = np.hstack((flatten(z0), flatten(v0)))
+initial = np.hstack((flatten(z), flatten(v)))
 
 #%% `odeint` usage
 time = np.linspace(0, 10, 101)
@@ -122,23 +122,23 @@ import matplotlib.animation as animation
 velocity_color = plt.cm.get_cmap('cool')
 pedestrian_color = plt.cm.get_cmap('hsv', N)
 
-fig, axs = plt.subplots(1, 2, figsize=(12, 2), dpi=160, gridspec_kw={'width_ratios': [3, 1]})
+fig, axs = plt.subplots(1, figsize=(12, 2), dpi=160)
 
 def animate(frame):
-    axs[0].cla()
-    axs[0].set_title(f'time: {round(time[frame], 2)}')
-    axs[0].set_xlim(zxs[:, frame].min() - 3, zxs[:, frame].max() + 3)
+    axs.cla()
+    axs.set_title(f'time: {round(time[frame], 2)}')
+    axs.set_xlim(zxs[:, frame].min() - 3, zxs[:, frame].max() + 3)
     # axs[0].set_xlim(0, loop)
 
-    axs[0].set_ylim(zys.min() - 0.1, zys.max() + 0.1)
+    axs.set_ylim(zys.min() - 0.1, zys.max() + 0.1)
 
     vs = np.stack((vxs[:, frame], vys[:, frame]), axis=1)
     max_speed = np.linalg.norm(vs, axis=1).max()
 
     for i in range(N):
-        axs[0].scatter(zxs[i, frame], zys[i, frame], color=pedestrian_color(i), s=100)
+        axs.scatter(zxs[i, frame], zys[i, frame], color=pedestrian_color(i), s=100)
 
-        axs[0].arrow(zxs[i, frame], zys[i, frame], vxs[i, frame], vys[i, frame], color=velocity_color(np.linalg.norm(vs[i]) / max_speed))
+        axs.arrow(zxs[i, frame], zys[i, frame], vxs[i, frame], vys[i, frame], color=velocity_color(np.linalg.norm(vs[i]) / max_speed))
 
     # axs[1].cla()
     # axs[1].set_title('bridge velocity')
@@ -147,3 +147,10 @@ def animate(frame):
 anim = animation.FuncAnimation(fig, animate, frames=len(time))
 
 anim.save('figs/2d-social.mp4')
+# %% interpolation
+import scipy.interpolate as interpolate
+
+zxs.size
+interpolation = interpolate.UnivariateSpline(zxs, zys)
+
+interpolate.BivariateSpline
