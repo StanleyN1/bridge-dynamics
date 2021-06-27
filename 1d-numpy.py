@@ -7,21 +7,6 @@ from numba import njit, jit, vectorize
 import tqdm
 from func_timeout import func_set_timeout
 
-def generate_pedestrians(N, D, sigma=1.):
-    y0 = np.random.uniform(-0.2, 0.2, size=(N, D))
-    dy0 = np.random.uniform(-0.2, 0.2, size=(N, D))
-    z0 = np.random.uniform(low=0, high=5, size=(N, D))
-    v0 = np.random.normal(loc=1.4, scale=0.2, size=(N, D))
-    vd = 1.3 * v0
-    m = np.random.normal(loc=76.9, scale=10., size=N)
-    tr = np.random.normal(loc=0.5, scale=0.1, size=N)
-    r = np.random.normal(loc=0.35, scale=0.01, size=N)
-    L = np.random.normal(1.17, 0.092*sigma, size=N)
-    people = np.stack((y0, dy0, z0, v0), axis=1)
-    params = np.stack((m, L, vd.flatten(), tr, r), axis=1)
-
-    return people, params
-
 @njit
 def H3(y, dy, o, a, l, p):
     return -(o)**2 * (y - p*(1 - 2 * (y < 0))) + l*(dy**2 + (o)**2 * (a**2 - (y - p*(1 - 2 * (y < 0)))**2))*dy
@@ -176,11 +161,15 @@ def simulate_model_1_2(x, dx, people, params, N, t_f, model, ratio=None, sigma=1
     r = m / (M + m)
 
     # forward_speed = forward_speed * np.ones(self.N)
+    regular_leg = L / 1.34
+    height = (regular_leg + 0.3091) / 0.7028
 
-    fp = 0.9*np.ones(N)# f(vd) / 2
+    v = people[:, 3].flatten()
+
+    # fp = 1.3502 * (v ** 0.5) / height# 0.9*np.ones(N)# f(vd) / 2
     # fp = fp*np.ones(self.N)
     # fp = np.cbrt(v / (Ls * (1.352 / 1.34))**2)
-    # fp = self.f(vs) / 2
+    fp = f(v) / 2
 
     bridge_hz = 1.03
     O = (bridge_hz*2*np.pi)
@@ -220,6 +209,13 @@ def simulate_model_1_2(x, dx, people, params, N, t_f, model, ratio=None, sigma=1
         state = sol.y[:, -1]
         x, dx, y, dy, z, v = parse(state, N)
 
+        # plt.scatter(z, y)
+        # plt.show()
+
+        fp = 1.3502 * np.sqrt(v) / height # f(v) / 2 #
+        # print(v)
+
+        o = 2.5 * fp # crude but necessary implemntation
         # fp = np.cbrt(v / (Ls * (1.352 / 1.34))**2)
         # fp = self.f(np.sqrt(v**2 + fp**3*Ls**2*(1.352/1.34))) / 2
         # plt.plot(sol.t, sol.y[2:][self.N:2*self.N].T);
@@ -230,7 +226,6 @@ def simulate_model_1_2(x, dx, people, params, N, t_f, model, ratio=None, sigma=1
 
         p[idx_foot_down] = y[idx_foot_down] + dy[idx_foot_down] / o[idx_foot_down] + bmin[idx_foot_down]
         bmin[idx_foot_down] *= -1
-
 
         if model == 1:
             t_s_next[idx_foot_down] += 0.5 / fp[idx_foot_down] # adding by the period (model 1)
@@ -381,14 +376,32 @@ def rk4(f, t, x, h):
 
 
 # %%
+def generate_pedestrians(N, D, sigma=1.):
+    y0 = np.random.uniform(-0.2, 0.2, size=(N, D))
+    dy0 = np.random.uniform(-0.2, 0.2, size=(N, D))
+    z0 = np.random.uniform(low=0, high=10, size=(N, D))
+    v0 = np.random.normal(loc=1.4, scale=0.2, size=(N, D))
+    vd = 1.3 * v0
+    m = np.random.normal(loc=76.9, scale=10., size=N)
+    tr = np.random.normal(loc=0.5, scale=0.01, size=N)
+    r = np.random.normal(loc=0.35, scale=0.01, size=N)
+    L = np.random.normal(1.17, 0.092*sigma, size=N)
+    people = np.stack((y0, dy0, z0, v0), axis=1)
+    params = np.stack((m, L, vd.flatten(), tr, r), axis=1)
+
+    return people, params
+
+
 %matplotlib inline
 np.random.seed(123)
 
 D = 1
-N = 10
+N = 150
 sigma = 1
 
-model2 = simulate_model_1_2(x=0.0, dx=0.0, N=N, t_f=10, model=2, ratio=3.2, sigma=1.0)
+people, params = generate_pedestrians(N, 1, sigma)
+
+model2 = simulate_model_1_2(x=0.0, dx=0.01, people=people, params=params, N=N, t_f=100, model=2, ratio=1., sigma=1.0)
 
 time = np.hstack(model2[0])
 data = np.hstack(model2[1])

@@ -5,24 +5,22 @@ from scipy.integrate import solve_ivp, odeint
 import numba as nb
 from numba import njit, jit, vectorize
 import tqdm
+from func_timeout import func_set_timeout
 
 class Simulation:
-    def __init__(self, N, D, z0, v0, y0, dy0, m0, L0, vmax, alpha, F, x, dx, ratio=None, z_color=None, v_color=None):
+    def __init__(self, N, D, z0, v0, y0, dy0, m0, L0, vmax, alpha, x, dx, ratio=None, z_color=None, v_color=None):
         functionify = lambda x: x if callable(x) else (lambda: x)
 
         self.N = N
         self.D = D
 
         self.z0 = functionify(z0)
-        self.v0 = functionify(z0)
+        self.v0 = functionify(v0)
         self.y0 = functionify(y0)
         self.dy0 = functionify(dy0)
 
         self.m0 = functionify(m0)
         self.L0 = functionify(L0)
-
-        self.F0 = F # non vectorized
-        self.F = F # vectorize(F) # np.vectorize(F)
 
         self.x = x
         self.dx = dx
@@ -47,8 +45,8 @@ class Simulation:
             return -(o)**2 * (y - p*(1 - 2 * (y < 0))) + l*(dy**2 + (o)**2 * (a**2 - (y - p*(1 - 2 * (y < 0)))**2))*dy
 
         @jit([nb.float64[:](nb.float64[:], nb.float64[:], nb.float64[:]), nb.float64[:](nb.float64[:], nb.float64[:], nb.float64)])
-        def H1(y, o, p):
-            return -(o)**2 * (p - y)
+        def H1(y, p, o):
+            return o**2 * (p - y)
 
         self.H1 = H1
         self.H = H # np.vectorize(H)
@@ -57,11 +55,7 @@ class Simulation:
         self.bridge_hz = 1.03
         self.O = (self.bridge_hz*2*np.pi)
 
-        if ratio:
-            o = np.sqrt(9.81 / self.get('L')).mean()
-            # calc =  (self.O) / (0.25*o/np.log(self.p / self.a + np.sqrt((self.p / self.a)**2 - 1)))
-            # self.O = (ratio / calc).mean()*self.O
-            self.O = ratio * o / (4*np.log(self.p / self.a + np.sqrt((self.p / self.a)**2 - 1)))
+        self.ratio = ratio
 
         self.h = self.O * 0.04
 
@@ -80,17 +74,17 @@ class Simulation:
 
         @jit(nb.float64[:](nb.float64[:], nb.float64[:]))
         def f_max(v, vmax):
-            # return (0.35*v*v*v - 1.59*v*v + 2.93*v) / (0.35*vmax*vmax*vmax - 1.59*vmax*vmax + 2.93*vmax)
+            return (0.35*v*v*v - 1.59*v*v + 2.93*v) / (0.35*vmax*vmax*vmax - 1.59*vmax*vmax + 2.93*vmax)
             # return v / vmax
-            return np.ones(len(v))
+            # return np.ones(len(v))
 
         self.f_max = f_max # np.vectorize(f_max)
 
-        @jit(nb.float64[:](nb.float64[:], nb.float64[:], nb.float64[:], nb.float64[:], nb.float64[:], nb.int32))
-        def social(z, v, pz, pvmax, palpha, N): # assuming F function is equal
+        @jit(nb.float64[:](nb.float64[:], nb.float64[:], nb.float64[:], nb.float64[:], nb.int32))
+        def social(z, v, pvmax, palpha, N): # assuming F function is equal
             forces = np.zeros(N)
             for i in range(N):
-                social_force = (2.0*((pz - z[i]) > 0)*np.exp(-5.0*(pz - z[i]))).sum() # SOCIAL FORCE FUNCTION self.F(z[i], pz).sum()
+                social_force = (2.0*((z - z[i]) > 0)*np.exp(-5.0*(z - z[i]))).sum() # SOCIAL FORCE FUNCTION self.F(z[i], pz).sum()
                 forces[i] = palpha[i]*(v[i] - pvmax[i]) - v[i]*social_force
 
             return forces
@@ -101,16 +95,20 @@ class Simulation:
         def F(zi, zj):
             return 2.0*((zj - zi) > 0)*np.exp(-5.0*(zj - zi))
 
+        self.F0 = F # non vectorized
+        self.F = F # vectorize(F) # np.vectorize(F)
+
+
         self.z_color = plt.cm.get_cmap(z_color, N)
         self.v_color = plt.cm.get_cmap(v_color)
 
         self.history = []
 
     def initialize_pedestrians(self):
-        self.people = [[self.y0(), self.dy0(), self.z0(), self.v0(), self.vmax(), self.alpha(), self.F0, self.m0(), self.L0(), self]     for _ in range(self.N)]
+        self.people = [[self.y0(), self.dy0(), self.z0(), self.v0(), self.vmax(), self.alpha(), self.m0(), self.L0()] for _ in range(self.N)]
 
     def get(self, prop):
-        props = ['y', 'dy', 'z', 'v', 'vmax', 'alpha', 'F0', 'm', 'L']
+        props = ['y', 'dy', 'z', 'v', 'vmax', 'alpha', 'm', 'L']
         idx = props.index(prop)
 
         if prop == 'x':
@@ -197,7 +195,7 @@ class Simulation:
 
         r = self.get('m') / (M + self.get('m'))
 
-        scale = np.ones_like(o)# (self.f_max(vs, self.get('vmax')))
+        scale = (self.f_max(vs, self.get('vmax'))) # np.ones_like(o)#
         # scale = np.sqrt(vs / self.get('vmax'))
 
         H = self.H(peds, dpeds, o*scale, self.a, self.l, self.p)
@@ -211,97 +209,129 @@ class Simulation:
             dpeds,
             -ddx - H,
             # np.ones_like(vs), np.ones_like(vs)])
-            vs, self.social(zs, vs, self.get('z'), self.get('vmax'), self.get('alpha'), self.N)])
+            vs, self.social(zs, vs, self.get('vmax'), self.get('alpha'), self.N)])
 
-    def simulate_model_1_2(self, t_f, fp, step_width, z_per_step, model):
+    @func_set_timeout(480)
+    def simulate_model_1_2(self, t_f, fp, step_width, forward_speed, model, state=None):
 
-        def ddx_func(x, dx, H, r, h, O, M):
-            return (H*r/M).sum() - h*dx - (O*O)*x
+        H1 = self.H1
+        ddx_func = self.ddx
+        social = self.social
 
-        def H1(y, p, o): # o^2 = g / l
-            return o**2 * (p - y)
+        @njit
+        def model_func(t, S, p, o, r, N, h, O, vmaxs, alphas):
 
-        def model_func(t, S, p, o):
+            x = np.array([S[0]])
+            dx = np.array([S[1]])
+            y = S[2:][:N] # lateral pos
+            dy = S[2:][N:2 * N] # lateral vel
 
+            z = S[2:][2 * N:3 * N] # forward pos
+            v = S[2:][3 * N:4 * N] # forward vel
 
-            x, dx, y, dy, zs, vs = Simulation.parse(S, self.N)
-            x = np.array([x])
-            dx = np.array([dx])
+            # scale = np.ones_like(o) # self.f_max(vs, self.get('vmax')) # np.ones_like(o) # ()
 
-            M = 113e3
-            r = self.get('m') #  / (M + self.get('m'))
-            scale = np.ones_like(o) # (self.f_max(vs, self.get('vmax')))
+            H = H1(y, p, o)
 
-            H = H1(y, p, o*scale)
+            ddx = ddx_func(x, dx, H, r, h, O)
 
-            ddx = ddx_func(x, dx, H, r, self.h, self.O, M)
-
-            return np.hstack([
+            return np.hstack((
                 dx, ddx,
                 dy, -ddx - H,
-                np.ones_like(vs), np.ones_like(vs)# social force
-            ])
+                # np.zeros_like(v), np.zeros_like(v)))
+                v, social(z, v, vmaxs, alphas, N) # social force
+             ))
 
+        x = 0.0
+        dx = 0.0
+        z = self.get('z')
+        v = self.get('v')
+
+
+        Ls = self.get('L')
+        o = np.sqrt(9.81 / Ls)
+
+        # forward_speed = forward_speed * np.ones(self.N)
+
+        fp = self.f(v) / 2
+        # fp = fp*np.ones(self.N)
+        # fp = np.cbrt(v / (Ls * (1.352 / 1.34))**2)
+        # fp = self.f(vs) / 2
+
+        self.bridge_hz = 1.03
+        self.O = (self.bridge_hz*2*np.pi)
+        self.O /= self.ratio*self.O / (2*fp*np.pi)
+        self.O = self.O.mean()
+        self.h = self.O * 0.04
 
         t_0 = 0.
-        # fp = 0.9
-        t_s_next = np.random.uniform(0, 0.5/fp, self.N) # 0.5/fp is step period
+        t_s_next = np.random.uniform(0, (0.5/fp).max(), self.N) # 0.5/fp is step period
 
         bmin = np.random.randn(self.N)*0.002+0.0157 # bmin initialization
         bmin *= 1.0-2.0*(np.random.rand(self.N)>0.5) # choose foot
-
-        o = np.sqrt(9.81 / self.get('L'))
 
         p = bmin*(1.0-np.tanh(0.25*np.sqrt(9.8/self.get('L')) / fp))
 
         y = np.zeros(self.N)
         dy = p * o * np.tanh(o * 0.5/fp)
 
-        x = 0.0
-        dx = 0.0
-        zs = np.zeros_like(y)
-        vs = np.zeros_like(y)
-
-        state = np.hstack([x, dx, y, dy, zs, vs])
-
+        if state is None:
+            state = np.hstack([x, dx, y, dy, z, v])
+        M = 113e3
+        r = self.get('m') / (M + self.get('m'))
         times = []
         sols = []
         ps = []
         while t_0 < t_f:
-            # print(t_s_next)
-            sol = solve_ivp(model_func, y0=state, t_span=(0, t_s_next.min() - t_0), args=(p, o), method='LSODA', max_step=1e-3)
+
+            # Ls = np.sqrt(v / (fp**3) / (1.35/1.34)**2)
+            o = np.sqrt(9.81 / Ls)
+            # print('Ls:', Ls)
+            # print(state)
+
+            sol = solve_ivp(model_func, y0=state, t_span=(0, t_s_next.min() - t_0), args=(p, o, r, self.N, self.h, self.O, self.get('vmax'), self.get('alpha')), method='RK45')
 
 
             times.append(sol.t + t_0)
             sols.append(sol.y)
 
             state = sol.y[:, -1]
-            y = state[2:][:self.N]
-            dy = state[2:][self.N:2*self.N]
+            x, dx, y, dy, z, v = Simulation.parse(state, self.N)
+
+            # fp = np.cbrt(v / (Ls * (1.352 / 1.34))**2)
+            # fp = self.f(np.sqrt(v**2 + fp**3*Ls**2*(1.352/1.34))) / 2
+            # plt.plot(sol.t, sol.y[2:][self.N:2*self.N].T);
 
             t_0 = t_s_next.min()
             idx_foot_down = np.where(t_s_next <= t_0 + 1e-10)[0]
-
+            # fp = self.f(v[idx_foot_down]) / 2
 
             p[idx_foot_down] = y[idx_foot_down] + dy[idx_foot_down] / o[idx_foot_down] + bmin[idx_foot_down]
             bmin[idx_foot_down] *= -1
 
+
             if model == 1:
-                t_s_next[idx_foot_down] += 0.5 / fp # adding by the period (model 1)
+                t_s_next[idx_foot_down] += 0.5 / fp[idx_foot_down] # adding by the period (model 1)
 
             if model == 2:
-                step_width = 0.046 # unperturbed
-                z_per_step = 0.36 # can be updated based on social forward motion
 
-                t_s_next[idx_foot_down] += 0.5 / fp
-                t_s_next[idx_foot_down] += (0.5 / fp) * (step_width**2 - (y[idx_foot_down] - p[idx_foot_down])**2) / (4*z_per_step) # adding by the period (model 2)
-            ps.append(p)
-        return [times, sols, ps]
+                step_width = bmin[idx_foot_down]/(1 - np.tanh(o[idx_foot_down] / 4.0 / fp[idx_foot_down]))
+
+                # step_width = 2.01 * y + 0.444 * dy
+                # step_length = -0.52*np.sign(bmin) * y - 0.34*np.sign(bmin) *dy + 0.23*v
+                step_length = v[idx_foot_down] / self.f(v[idx_foot_down])
+                # step_width = 0.046 # unperturbed
+                # step_length = 0.36 # can be updated based on social forward motion
+
+                t_s_next[idx_foot_down] += 0.5 / fp[idx_foot_down]
+                t_s_next[idx_foot_down] += (0.5 / fp[idx_foot_down]) * (step_width**2 - (y[idx_foot_down] - p[idx_foot_down])**2) / (4*step_length**2) # adding by the period (model 2)
+
+        return [times, sols]
 
 
 
     def generate_pedestrians(self, N):
-        return [[self.y0(), self.dy0(), self.z0(), self.v0(), self.vmax(), self.alpha(), self.F0, self.m0(), self.L0(), self] for _ in range(N)]
+        return [[self.y0(), self.dy0(), self.z0(), self.v0(), self.vmax(), self.alpha(), self.m0(), self.L0()] for _ in range(N)]
 
     def simulate_pedestrians(self, Ns, ts, loop, control):
         # Ns[i] = number of pedestrians to start walking at time ts[i]
@@ -358,6 +388,41 @@ class Simulation:
         plt.title('ratio of bridge to pedestrian frequency')
 
     @staticmethod
+    def plot_time_data(time, data):
+        x, dx, y, dy, z, v = Simulation.parse(data, (data.shape[0] - 2) // 4)
+        fig, axs = plt.subplots(3, 2, figsize=(8, 10), sharex=True)
+
+        axs[0][0].plot(time, x.T)
+        axs[0][0].set_title('bridge position')
+        axs[0][1].plot(time, dx.T)
+        axs[0][1].set_title('bridge velocity')
+
+        axs[1][0].plot(time, y.T)
+        axs[1][0].set_title('lateral position')
+        axs[1][1].plot(time, dy.T)
+        axs[1][1].set_title('lateral velocity')
+
+        axs[2][0].plot(time, z.T)
+        axs[2][0].set_title('forward position')
+        axs[2][1].plot(time, v.T)
+        axs[2][1].set_title('forward velocity')
+
+        plt.tight_layout()
+
+    @staticmethod
+    def plot_phase(data):
+        x, dx, y, dy, z, v = Simulation.parse(data, (data.shape[0] - 2) // 4)
+        fig, axs = plt.subplots(1, 2, figsize=(12, 5))
+
+        axs[0].plot(x, dx)
+        axs[0].set_title('bridge position vs velocity')
+
+        axs[1].plot(y, dy)
+        axs[1].set_title('lateral position vs velocity')
+
+
+    @staticmethod
+    @njit
     def parse(S, N):
         bridge, dbridge = S[0:2]
         peds = S[2:][:N] # lateral pos
@@ -404,21 +469,15 @@ class Simulation:
 
 # %%
 %matplotlib inline
-
+np.random.seed(123)
 # np.random.seed(123)
 
-N = 5
+N = 50
 D = 1
 
-def F(zi, zj):
-    kappa = 2.0
-    c = 5.0
-
-    heaviside = lambda x: 1 if x > 0 else 0
-    return kappa*heaviside(zj - zi)*np.exp(-c*(zj - zi))
 
 
-z0 = lambda: np.random.uniform(low=0, high=1)
+z0 = lambda: np.random.uniform(low=0, high=5)
 v0 = lambda: np.random.normal(loc=0.8, scale=0.1)
 
 y = 0.008
@@ -427,20 +486,116 @@ x = 0.000
 dx = 0.00 # 5
 
 sigma = 1
-m0 = lambda: np.random.normal(76.9, 10*sigma) # 70
-L0 = lambda: 1.17 # lambda: np.random.normal(1.17, 0.092*sigma)
+m0 = lambda: np.random.normal(76.9, 10*sigma)
+L0 = lambda: np.random.normal(1.17, 0.092*sigma)
 
 vmax = lambda: np.random.normal(1.5, 0.125) # 1.5 # np.random.uniform(1.3, 1.8) # 1.5
 alpha = lambda: -1*(0.1*np.random.uniform(0, 1) + 0.025*np.random.uniform(0, 5)) # -0.1
 
-sim = Simulation(N, D, z0, v0, y, dy, m0, L0, vmax, alpha, F, x, dx, ratio=None)
+sim = Simulation(N, D, z0, v0, y, dy, m0, L0, vmax, alpha, x, dx, ratio=1)
 sim.plot_parameters()
 
 # sim.plot_freqs()
 
 # %%
+forward_speed=0.36
+step_width=0.046
 
-test = sim.simulate_model_1_2(t_f=5, fp=0.7, step_width=0.047, z_per_step=0.36, model=2)
+ratios = np.linspace(0.2, 2.6, 13)
+
+ratios2 = np.linspace(0.3, 5.3, 26)
+Ns = np.arange(150, 235, 10)
+# Ns = np.arange(1, 15, 5)
+
+model2 = sim.simulate_model_1_2(t_f=10, fp=0.9, step_width=step_width, forward_speed=forward_speed, model=2)
+
+time = np.hstack(model2[0])
+data = np.hstack(model2[1])
+Simulation.plot_time_data(time, data)
+# %%
+for ratio in tqdm.tqdm(ratios):
+    t = 40
+    for N in tqdm.tqdm(Ns):
+        np.random.seed(123)
+        sim = Simulation(N, D, z0, v0, y, dy, m0, L0, vmax, alpha, x, dx, ratio=ratio)
+        try:
+            model2 = sim.simulate_model_1_2(t_f=t, fp=0.9, step_width=step_width, forward_speed=forward_speed, model=2)
+            time = np.hstack(model2[0])
+            data = np.hstack(model2[1])
+            np.save(f'data/violinplot/data-ratio={round(ratio, 2)}-N={N}.npy', np.vstack([time, data]))
+
+        except:
+            try:
+                model2 = sim.simulate_model_1_2(t_f=t-15, fp=0.9, step_width=step_width, forward_speed=forward_speed, model=2)
+                time = np.hstack(model2[0])
+                data = np.hstack(model2[1])
+
+                np.save(f'data/violinplot/data-ratio={round(ratio, 2)}-N={N}.npy', np.vstack([time, data]))
+            except:
+                continue
+
+ # %%
+# ((fp)*sim.get('L')/1.34/1.352)**2*(fp)
+Ns = np.arange(1, 200, 5)
+# datas = []
+# times = []
+for N in tqdm.tqdm(Ns):
+    np.random.seed(123)
+    sim = Simulation(N, D, z0, v0, y, dy, m0, L0, vmax, alpha, F, x, dx, ratio=None)
+
+    test = sim.simulate_model_1_2(t_f=80, fp=0.9, step_width=step_width, forward_speed=forward_speed, model=2)
+    data = np.hstack(test[1])
+    time = np.hstack([np.hstack(test[0])])
+    datas.append(data)
+    times.append(time)
+
+# %%
+maxs = []
+
+for ratio in ratios:
+    max_peaks = []
+    for N in Ns:
+        data = np.load(f'data/violinplot/data-ratio={round(ratio, 2)}-N={N}.npy')
+        time = data[0]
+        bridge, dbridge, peds, dpeds, zs, vs = Simulation.parse(data[1:], N)
+        max_peak = np.abs(bridge[-len(time) // 50:]).max()
+        max_peaks.append(max_peak)
+    maxs.append(max_peaks)
+
+
+
+    # plt.plot(Ns, maxs)
+max_data = np.load('data/violinplot/final.npy')
+max_data_2 = np.array(maxs)
+np.save('data/violinplot/final2.npy', max_data_2)
+# np.save(f'data/violinplot/final.npy', max_data)
+# %%
+from sortedcontainers import SortedDict
+
+plt.rcParams["figure.figsize"] = (8, 6)
+
+ratios_final = np.sort(np.concatenate([ratios, ratios2]))
+d = dict(zip(np.around(ratios, 2), max_data)) | dict(zip(np.around(ratios2, 2), max_data_2))
+
+s = SortedDict(d)
+
+data = np.array(s.values())
+
+for i in range(len(Ns)):
+    plt.plot(ratios_final, data[:, i], label=Ns[i])
+
+plt.xlabel('$\Omega / \omega$')
+plt.ylabel('$A_x$')
+plt.title('bridge amplitude and ratio')
+plt.xlim(0.25, 2)
+plt.legend()
+plt.savefig('figs/brige-ratio-zoomed.pdf')
+# %%
+data = np.load(f'data/violinplot/data-ratio={1.}-N={230}.npy')
+
+data[1:][1][0]
+
+Simulation.plot_time_data(data[0], data[1:])
 
 # %%
 for i in range(len(test[0])):
@@ -477,7 +632,7 @@ loop = None # 100
 control = True
 # Simulation.plot_state(initial, N)
 
-sol = solve_ivp(sim.ode_bridge_full_optimized, t_span=(0, 100), y0=initial, args=(loop, control), method='RK45')
+sol = solve_ivp(sim.ode_bridge_full_optimized, t_span=(0, 50), y0=initial, args=(loop, control), method='RK45')
 # %%
 # sol, d = odeint(sim.ode_bridge_full, y0=initial, t=time, full_output = 1, tfirst=True, args=(loop, ))
 num_of_runs = 30
@@ -680,8 +835,9 @@ for i in range(len(test[0])):
 
 
  # %%
-
 import matplotlib.animation as animation
+
+bridge, dbridge, peds, dpeds, zs, vs = Simulation.parse(data, N)
 
 fig, axs = plt.subplots(1, 2, figsize=(12, 2), dpi=160, gridspec_kw={'width_ratios': [3, 1]})
 
@@ -701,7 +857,7 @@ def animate(frame):
 
 anim = animation.FuncAnimation(fig, animate, frames=len(time) - 1600)
 
-anim.save('figs/optimized.mp4')
+anim.save('figs/model2.mp4')
 # %% WARNING: took over 6 gb of harddrive space to save all data
 D = 1
 

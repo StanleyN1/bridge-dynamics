@@ -2,40 +2,53 @@ import sympy as smp
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp, odeint
-from numba import njit
+from numba import njit, jit
 
+@njit
 def flatten(vectors):
     return np.hstack((vectors[:, 0], vectors[:, 1]))
 
+@njit
 def twoDify(vectorx, vectory):
     return np.concatenate((vectorx.reshape(vectorx.shape[0], 1), vectory.reshape(vectory.shape[0], 1)), axis=1)
 
+@njit
+def norm_axis_1(vector):
+    norm = np.zeros(vector.shape[0])
+    for i in range(vector.shape[0]):
+        norm[i] = np.linalg.norm(vector[i])
+    return norm
+
+@njit
 def V(r, v, vd, i, dt=0.1):
     # s = 0.5 # step length/width of pedestrian other pedestrian j
     ed = (vd - v) / np.linalg.norm((vd - v))
 
-    s = np.linalg.norm(vd, axis=1) * dt
-    b = 0.5*np.sqrt((np.linalg.norm(r, axis=1) + np.linalg.norm(r - (s * ed.T).T, axis=1))**2 - s**2) # eq (4) helbing
+    s = norm_axis_1(vd) * dt
+    b = 0.5*np.sqrt((norm_axis_1(r) + norm_axis_1(r - (s * ed.T).T))**2 - s**2) # eq (4) helbing
     b[i] = 0.0
     V0 = 2.1
     sigma = 0.3
     return V0 * np.exp(-b / sigma) # eq 13
 
-def U(rB):
+@njit
+def U(rB, v, vd, i, dt):
     U0 = 10.
     R = 0.2
     return U0 * np.exp(-np.linalg.norm(rB) / R)
 
-def gradient(F, r, delta=1e-3, *args): # idea: use np.gradient instead
+def gradient(F, r, delta, v, vd, i, dt): # idea: use np.gradient instead
     dx = np.array([delta, 0.0])
     dy = np.array([0.0, delta])
 
-    f = F(r, *args)
-    dvdx = (F(r + dx, *args) - f) / delta
-    dvdy = (F(r + dy, *args) - f) / delta
 
-    return np.stack((dvdx, dvdy))
+    f = F(r, v, vd, i, dt)
+    dvdx = (F(r + dx, v, vd, i, dt) - f) / delta
+    dvdy = (F(r + dy, v, vd, i, dt) - f) / delta
 
+    return np.vstack((dvdx, dvdx)) # np.vstack((dvdx, dvdy))
+
+@njit
 def field_of_view(f, r, c):
     twophi = 135.0
     return ((-f.T*r).sum(1) >= np.linalg.norm(-f) * np.cos(twophi / 2)) * (1 - c) + c
@@ -58,12 +71,13 @@ def social(z, v, vd, tr, m, N, width, dt): # assuming F function is equal
         left_wall = np.array([z[i][0], width/2])
         right_wall = np.array([z[i][0], -width/2])
 
-        left_wall_F = -gradient(U, left_wall - z[i], 1e-4)
-        right_wall_F = -gradient(U, right_wall - z[i], 1e-4)
+        left_wall_F = -gradient(U, left_wall - z[i], 1e-4, v, vd, i, dt)
+        right_wall_F = -gradient(U, right_wall - z[i], 1e-4, v, vd, i, dt)
 
         # forces[i] = tr[i]*(v[i] - pvmax[i]) - v[i]*social_force #returns a 2d vector
 
-        F = ped_F.sum(0) + left_wall_F + right_wall_F + motive_F
+        F = ped_F.sum(0) + left_wall_F.reshape(-1) + right_wall_F.reshape(-1) + motive_F
+
         forces[i] = F
 
     return forces.flatten('F')
@@ -98,9 +112,9 @@ vd = np.stack((np.random.uniform(0, 0.75)*np.ones(N, dtype=np.float64), np.zeros
 initial = np.hstack((flatten(z), flatten(v)))
 
 #%% `odeint` usage
-time = np.linspace(0, 10, 101)
-sol = odeint(ode, y0=initial, t=time, args=(vd, tr, m, N, width), tfirst=True)
-sol = sol.T
+# time = np.linspace(0, 10, 101)
+# sol = odeint(ode, y0=initial, t=time, args=(vd, tr, m, N, width), tfirst=True)
+# sol = sol.T
 
 # %%
 sol = solve_ivp(ode, y0=initial, t_span=(1e-2, 50), args=(vd, tr, m, N, width), rtol=1e-2, atol=1e-4)
