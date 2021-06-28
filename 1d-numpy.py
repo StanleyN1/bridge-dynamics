@@ -28,12 +28,12 @@ def ddx(x, dx, H, r, h, O):
 
 
 @njit
-def f(x):
+def carroll(x):
     return 0.35*x*x*x - 1.59*x*x + 2.93*x
 
 @njit
 def f_max(v, vmax):
-    return f(v) / f(vmax)
+    return carroll(v) / carroll(vmax)
         # return v / vmax
         # return np.ones(len(v))
 
@@ -50,6 +50,9 @@ def social(z, v, vd, tr, N): # assuming F function is equal
 def F(zi, zj):
     return 2.0*((zj - zi) > 0)*np.exp(-5.0*(zj - zi))
 
+@njit
+def dean(v, height):
+    return 1.3502 * np.sqrt(v) / height
 
 '''
 integrates wrt the whole system
@@ -85,7 +88,7 @@ def ode_bridge_full_optimized(t, S, loop, control):
                 dpeds[i] += 0.5
                 # print(f'controlled: {i}')
 
-    Ls = 2*vs / f(vs)
+    Ls = 2*vs / carroll(vs)
 
     o = np.sqrt(9.81/Ls)  # self.v_to_o(vs, self.get('L')) # np.sqrt(9.81/self.get('L')) / 2 # 1.04 #  #
 
@@ -166,10 +169,10 @@ def simulate_model_1_2(x, dx, people, params, N, t_f, model, ratio=None, sigma=1
 
     v = people[:, 3].flatten()
 
-    # fp = 1.3502 * (v ** 0.5) / height# 0.9*np.ones(N)# f(vd) / 2
+    # fp = 1.3502 * (v ** 0.5) / height# 0.9*np.ones(N)# carroll(vd) / 2
     # fp = fp*np.ones(self.N)
     # fp = np.cbrt(v / (Ls * (1.352 / 1.34))**2)
-    fp = f(v) / 2
+    fp = carroll(v) #, height)
 
     bridge_hz = 1.03
     O = (bridge_hz*2*np.pi)
@@ -209,20 +212,20 @@ def simulate_model_1_2(x, dx, people, params, N, t_f, model, ratio=None, sigma=1
         state = sol.y[:, -1]
         x, dx, y, dy, z, v = parse(state, N)
 
+        t_0 = t_s_next.min()
+        idx_foot_down = np.where(t_s_next <= t_0 + 1e-10)[0]
+        # fp = self.carroll(v[idx_foot_down]) / 2
+
         # plt.scatter(z, y)
         # plt.show()
 
-        fp = 1.3502 * np.sqrt(v) / height # f(v) / 2 #
+        fp[idx_foot_down] = carroll(v[idx_foot_down]) # , height[idx_foot_down])# 1.3502 * np.sqrt(v[idx_foot_down]) / height[idx_foot_down] # carroll(v) / 2 #
         # print(v)
 
-        o = 2.5 * fp # crude but necessary implemntation
+        o[idx_foot_down] = 1.5 * fp[idx_foot_down] # crude but necessary implemntation
         # fp = np.cbrt(v / (Ls * (1.352 / 1.34))**2)
-        # fp = self.f(np.sqrt(v**2 + fp**3*Ls**2*(1.352/1.34))) / 2
+        # fp = self.carroll(np.sqrt(v**2 + fp**3*Ls**2*(1.352/1.34))) / 2
         # plt.plot(sol.t, sol.y[2:][self.N:2*self.N].T);
-
-        t_0 = t_s_next.min()
-        idx_foot_down = np.where(t_s_next <= t_0 + 1e-10)[0]
-        # fp = self.f(v[idx_foot_down]) / 2
 
         p[idx_foot_down] = y[idx_foot_down] + dy[idx_foot_down] / o[idx_foot_down] + bmin[idx_foot_down]
         bmin[idx_foot_down] *= -1
@@ -236,7 +239,7 @@ def simulate_model_1_2(x, dx, people, params, N, t_f, model, ratio=None, sigma=1
 
             # step_width = 2.01 * y + 0.444 * dy
             # step_length = -0.52*np.sign(bmin) * y - 0.34*np.sign(bmin) *dy + 0.23*v
-            step_length = v[idx_foot_down] / f(v[idx_foot_down])
+            step_length = v[idx_foot_down] / fp[idx_foot_down] #carroll(v[idx_foot_down])
             # step_width = 0.046 # unperturbed
             # step_length = 0.36 # can be updated based on social forward motion
 
@@ -361,8 +364,9 @@ def plot_state(S, N):
 
     plt.tight_layout()
 
+def get_last_peak(time, bridge):
+    return np.abs(bridge[-len(time) // 50:]).max()
 
-@staticmethod
 def rk4(f, t, x, h):
 
     k1 = h * (f(t, x))
@@ -390,60 +394,89 @@ def generate_pedestrians(N, D, sigma=1.):
     params = np.stack((m, L, vd.flatten(), tr, r), axis=1)
 
     return people, params
-
+# %%
 
 %matplotlib inline
 np.random.seed(123)
 
 D = 1
-N = 150
+N = 200
 sigma = 1
 
 people, params = generate_pedestrians(N, 1, sigma)
 
-model2 = simulate_model_1_2(x=0.0, dx=0.01, people=people, params=params, N=N, t_f=100, model=2, ratio=1., sigma=1.0)
+model2 = simulate_model_1_2(x=0.0, dx=0.01, people=people, params=params, N=N, t_f=50, model=2, ratio=3., sigma=1.0)
 
 time = np.hstack(model2[0])
 data = np.hstack(model2[1])
 plot_time_data(time, data)
+plt.savefig('figs/coupling/dean-formula.pdf')
+
 # plot_freqs()
-
 # %%
-forward_speed=0.36
-step_width=0.046
+x, dx, y, dy, z, v = parse(data, 1)
+plt.plot(time, y.T)
+(0.9*1.17/1.34/1.352)**2*0.9
+# %%
+vs = np.linspace(0, 3., 1001)
+L = 1.17
 
-ratios = np.linspace(0.2, 2.6, 13)
+regular_leg = L / 1.34
+height = (regular_leg + 0.3091) / 0.7028
 
-ratios2 = np.linspace(0.3, 5.3, 26)
-Ns = np.arange(150, 235, 10)
+d = 1.3502 * np.sqrt(vs) / height
+c = carroll(vs)
+
+o = np.sqrt(9.81 / L)
+
+o / carroll(1.5)
+
+o
+dean(1.5, height) * 3
+
+plt.axhline(o)
+plt.plot(vs, 3*d, label='dean')
+plt.plot(vs, 1.5*c, label='carroll')
+plt.legend()
+plt.ylabel('lateral frequency (1/s)')
+plt.xlabel('velocity (m/s)')
+plt.savefig('coupling-formulas.pdf')
+# %%
+sigmas = np.array([0.05, 0.1, 0.25, 1.])
+dxs = np.array([0.0, 0.04, 0.08])
+ratios = np.linspace(0.2, 3.2, 16)
+Ns = np.arange(150, 235, 5)
 # Ns = np.arange(1, 15, 5)
 
-model2 = simulate_model_1_2(t_f=10, fp=0.9, step_width=step_width, forward_speed=forward_speed, model=2)
-
-time = np.hstack(model2[0])
-data = np.hstack(model2[1])
-plot_time_data(time, data)
 # %%
-for ratio in tqdm.tqdm(ratios):
-    t = 40
-    for N in tqdm.tqdm(Ns):
-        np.random.seed(123)
-        sim = Simulation(N, D, z0, v0, y, dy, m0, L0, vmax, alpha, x, dx, ratio=ratio)
-        try:
-            model2 = simulate_model_1_2(t_f=t, fp=0.9, step_width=step_width, forward_speed=forward_speed, model=2)
-            time = np.hstack(model2[0])
-            data = np.hstack(model2[1])
-            np.save(f'data/violinplot/data-ratio={round(ratio, 2)}-N={N}.npy', np.vstack([time, data]))
 
-        except:
-            try:
-                model2 = simulate_model_1_2(t_f=t-15, fp=0.9, step_width=step_width, forward_speed=forward_speed, model=2)
-                time = np.hstack(model2[0])
-                data = np.hstack(model2[1])
+maxs = np.zeros((len(dxs), len(sigmas), len(ratios), len(Ns)))
 
-                np.save(f'data/violinplot/data-ratio={round(ratio, 2)}-N={N}.npy', np.vstack([time, data]))
-            except:
-                continue
+for i, dx in enumerate(dxs):
+    for j, sigma in enumerate(sigmas):
+        for k, ratio in tqdm.tqdm(enumerate(ratios)):
+            t = 60
+            for l, N in enumerate(Ns):
+                np.random.seed(1234)
+                people, params = generate_pedestrians(N, 1, sigma)
+                try:
+                    model2 = simulate_model_1_2(x=0.0, dx=dx, people=people, params=params, N=N, t_f=t, model=2, ratio=ratio, sigma=sigma)
+                    time = np.hstack(model2[0])
+                    data = np.hstack(model2[1])
+                    # np.save(f'data/violinplot/data-ratio={round(ratio, 2)}-N={N}.npy', np.vstack([time, data]))
+
+                except:
+                    try:
+                        model2 = simulate_model_1_2(x=0.0, dx=dx, people=people, params=params, N=N, t_f=t-25, model=2, ratio=ratio, sigma=sigma)
+                        time = np.hstack(model2[0])
+                        data = np.hstack(model2[1])
+
+                        # np.save(f'data/violinplot/data-ratio={round(ratio, 2)}-N={N}.npy', np.vstack([time, data]))
+                    except:
+                        continue
+
+                maxs[i][j][k][l] = np.abs(data[0][-len(time) // 50:]).max()
+    np.save('data/violinplot2/peaks.npy', maxs)
 
  # %%
 # ((fp)*get('L')/1.34/1.352)**2*(fp)
@@ -637,7 +670,7 @@ plt.title('forward velocity')
 # (np.sqrt(9.81/ get('L')) / vs.T**0.58).std()
 #
 #
-# f(vs[:, 3]) / f(get('vmax'))
+# carroll(vs[:, 3]) / carroll(get('vmax'))
 #
 # np.sqrt(9.81/ get('L')) * vs.T / get('vmax')
 #
