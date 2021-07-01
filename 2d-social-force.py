@@ -35,6 +35,10 @@ def U(rB, ed, v, i, dt=0.1):
     U0 = 10
     R = 0.2
     return U0 * np.exp(-np.linalg.norm(rB) / R)
+    # if np.linalg.norm(rB) <= 1.0:
+    #     return U0 * np.exp(-2*np.linalg.norm(rB) / R)
+    # else:
+    #     return U0 * np.exp(np.linalg.norm(rB) / R)
 
 def gradient(F, r, delta, ed, v, i, dt=0.1): # idea: use np.gradient instead
     dx = np.array([delta, 0.0])
@@ -95,17 +99,17 @@ def ode(t, S, rd, vd, tr, m, N, width):
     return np.hstack((vxs, vys, social(zs, rd, vs, vd, tr, m, N, width, dt)))
 # %%
 np.random.seed(123)
-N_forward = 40
-N_backward = 40
+N_forward = 60
+N_backward = 0
 N = N_forward + N_backward
 D = 2
 
-end = 20.
+end = 10.
 width = 15.
 
 
-pedestrian_y = 7
-pedestrian_x = 4
+pedestrian_y = width // 2 - 1
+pedestrian_x = end - 1
 
 z_forward = np.stack((np.random.uniform(0, pedestrian_x, N_forward), np.random.uniform(low=-pedestrian_y, high=pedestrian_y, size=N_forward)), axis=1)
 z_backward = np.stack((np.random.uniform(end - pedestrian_x, end, N_backward), np.random.uniform(low=-pedestrian_y, high=pedestrian_y, size=N_backward)), axis=1)
@@ -113,7 +117,7 @@ z_backward = np.stack((np.random.uniform(end - pedestrian_x, end, N_backward), n
 z = np.vstack((z_forward, z_backward))
 
 v_forward = np.stack((1.5*np.ones(N_forward), 0.0*np.ones(N_forward)), axis=1) # np.random.normal(loc=1.34, scale=0.26, size=(N_forward, D))
-v_backward = np.stack((-1.5*np.ones(N_forward), 0.0*np.ones(N_forward)), axis=1) # np.random.normal(loc=-1.34, scale=0.26, size=(N_backward, D))
+v_backward = np.stack((-1.5*np.ones(N_backward), 0.0*np.ones(N_backward)), axis=1) # np.random.normal(loc=-1.34, scale=0.26, size=(N_backward, D))
 
 v = np.vstack((v_forward, v_backward))
 
@@ -137,15 +141,16 @@ initial = np.hstack((flatten(z), flatten(v)))
 # sol = sol.T
 
 # %%
+tf = 50
 
-sol = solve_ivp(ode, y0=initial, t_span=(1e-2, 45), args=(rd, vd, tr, m, N, width), rtol=1e-1, atol=1e-2)
+sol = solve_ivp(ode, y0=initial, t_span=(1e-2, tf), args=(rd, vd, tr, m, N, width), rtol=1e-1, atol=1e-2, dense_output=True)
 time = sol.t
-sol = sol.y
+S = sol.y
 # %%
-zxs = sol[:N]
-zys = sol[N: 2 * N]
-vxs = sol[2 * N: 3 * N]
-vys = sol[3 * N: 4 * N]
+zxs = S[:N]
+zys = S[N: 2 * N]
+vxs = S[2 * N: 3 * N]
+vys = S[3 * N: 4 * N]
 
 # %%
 from matplotlib.cm import get_cmap
@@ -154,9 +159,9 @@ color = get_cmap('hsv', N)
 
 plt.axhline(width/2, color='black')
 plt.axhline(-width/2, color='black')
-for i in range(len(time)):
+for i in range(len(time[0:100])):
     for j in range(N):
-        plt.scatter(zxs[j, i], zys[j, i], color=color(j))
+        plt.scatter(zxs[j, -1], zys[j, -1], color=color(j))
 
 # %%
 import matplotlib.animation as animation
@@ -196,4 +201,4 @@ def animate(frame):
 
 anim = animation.FuncAnimation(fig, animate, frames=len(time))
 
-anim.save('figs/social/2d-social-N=50-backward-forward-wider.mp4')
+anim.save('figs/social/2d-social-N=120-all-forward4.mp4')
